@@ -1,0 +1,91 @@
+import math
+import random
+import optuna
+
+def evaluate(legend, decrease, increase, n_trial=30, seed=42):
+    random.seed(seed)
+    #initial = [13333, 14667, 16000, 17333, 18677, 20000]
+    initial = [16000, 18000, 20000, 22000, 24000]
+    p = len(initial)
+    s = sum(initial)
+    rounds = 1000
+    total_remaining = 0
+
+    for j in range(n_trial):
+        score = [0] * p
+        last_bid = [0] * p
+        last_loss = [0] * p
+        last_penalty = [0] * p
+        window = [legend * initial[n] / s * 100 for n in range(p)]
+        pace = [0] * p
+
+        for i in range(rounds):
+            bandwidth = round(random.gauss(100, 5.17))
+            rounds_left = max(1, rounds - i)
+
+            for n in range(p):
+                pace[n] = 1.02 * (initial[n] - score[n]) / rounds_left
+                
+                if last_bid[n] > 0:
+                    if last_loss[n] > 0 or last_penalty[n] > 0:
+                        damage = (last_loss[n] + last_penalty[n]) / last_bid[n]
+                        window[n] = max(1.0, window[n] * max(0.05, (1.0 - decrease * damage)))
+                    elif last_bid[n] >= max(1, math.floor(window[n])):
+                        window[n] += random.uniform(0.6 * increase, 1.4 * increase)
+
+                amount = max(0.0, min(window[n], pace[n]))
+                lower = math.floor(amount)
+                bid = int(lower + int(random.random() < amount - lower))
+                last_bid[n] = bid
+
+            tot_bid = sum(last_bid)
+            if tot_bid == 0:
+                continue
+
+            if tot_bid <= bandwidth:
+                for n in range(p):
+                    score[n] += last_bid[n]
+                    last_loss[n] = 0
+                    last_penalty[n] = 0
+            else:
+                for n in range(p):
+                    last_loss[n] = last_bid[n] - int(last_bid[n] * bandwidth / tot_bid)
+                
+                tot_loss = sum(last_loss)
+                for n in range(p):
+                    last_penalty[n] = round(tot_loss * 1.5 * last_bid[n] / tot_bid)
+                    score[n] += last_bid[n] - last_loss[n] - last_penalty[n]
+
+        total_remaining += (s - sum(score))
+
+    return total_remaining / n_trial
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+def objective(trial):
+    # 탐색할 매개변수와 범위 정의
+    lg = trial.suggest_float("legend", 0.80, 1.1)
+    # dec = trial.suggest_float("decrease", 0.001, 0.20)
+    dec = 0
+    # inc = trial.suggest_float("increase", 0.001, 0.20)
+    inc = 0
+    
+    return evaluate(lg, dec, inc, n_trial=100)
+
+# 갱신 로그 출력을 위한 콜백 함수
+def logging_callback(study, trial):
+    if study.best_trial.number == trial.number:
+        lg = trial.params["legend"]
+        # dec = trial.params["decrease"]
+        dec = 0
+        # inc = trial.params["increase"]
+        inc = 0
+        print(f"[{trial.number + 1:3d}/100] 갱신! remaining: {trial.value:8.2f} | legend: {lg:.4f}, decrease: {dec:.5f}, increase: {inc:.5f}")
+
+print("=== AIMD(합연산) Optuna 하이퍼파라미터 최적화 시작 ===")
+study = optuna.create_study(direction="minimize")
+study.optimize(objective, n_trials=500, callbacks=[logging_callback])
+
+print("\n--- Optuna 최적화 최종 결과 ---")
+print(f"Best Value (remaining): {study.best_value:.2f}")
+print("Best Params:", study.best_params)

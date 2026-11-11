@@ -1,0 +1,78 @@
+import math
+import random
+import optuna
+
+def evaluate(legend, gain, target_congestion, n_trial=50, rounds=1000):
+    initial = [13333, 14667, 16000, 17333, 18677, 20000]
+    # initial = [20000, 20000, 20000, 20000, 20000]
+    p = len(initial)
+    s = sum(initial)
+    total_remaining = 0
+
+    for _ in range(n_trial):
+        score = [0] * p
+        last_bid = [0] * p
+        last_loss = [0] * p
+        last_penalty = [0] * p
+        window = [legend * initial[n] / s * 100 for n in range(p)]
+
+        for _ in range(rounds):
+            bandwidth = round(random.gauss(100, 5.17))
+            
+            for n in range(p):
+                if last_bid[n] > 0:
+                    congested = int(last_loss[n] > 0 or last_penalty[n] > 0)
+                    step = gain * (target_congestion - congested)
+                    damage = (last_loss[n] + last_penalty[n]) / last_bid[n]
+                    extra_backoff = min(0.08, 0.10 * max(0.0, damage - 0.35))
+                    window[n] = max(0.001, window[n] * math.exp(step - extra_backoff))
+
+                amount = max(0.0, window[n])
+                lower = math.floor(amount)
+                bid = int(lower + int(random.random() < amount - lower))
+                last_bid[n] = bid
+
+            tot_bid = sum(last_bid)
+            if tot_bid <= bandwidth:
+                for n in range(p):
+                    score[n] += last_bid[n]
+                    last_loss[n] = 0
+                    last_penalty[n] = 0
+            else:
+                for n in range(p):
+                    last_loss[n] = last_bid[n] - int(last_bid[n] * bandwidth / tot_bid)
+                
+                tot_loss = sum(last_loss)
+                for n in range(p):
+                    last_penalty[n] = round(tot_loss * 1.5 * last_bid[n] / tot_bid)
+                    score[n] += last_bid[n] - last_loss[n] - last_penalty[n]
+
+        total_remaining += (s - sum(score))
+
+    return total_remaining / n_trial
+
+# Optuna 기본 로그 숨기기
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+def objective(trial):
+    lg = trial.suggest_float("legend", 0.80, 1.05)
+    gn = trial.suggest_float("gain", 0.001, 0.02, log=True)
+    tc = trial.suggest_float("target_congestion", 0.10, 0.35)
+    
+    return evaluate(lg, gn, tc, n_trial=100)
+
+# 최저 remaining 기록이 갱신될 때만 결과를 출력하는 콜백 함수
+def logging_callback(study, trial):
+    if study.best_trial.number == trial.number:
+        lg = trial.params["legend"]
+        gn = trial.params["gain"]
+        tc = trial.params["target_congestion"]
+        print(f"[{trial.number + 1:3d}/100] 갱신! remaining: {trial.value:8.2f} | legend: {lg:.4f}, gain: {gn:.5f}, target: {tc:.4f}")
+
+print("=== Optuna 하이퍼파라미터 최적화 시작 ===")
+study = optuna.create_study(direction="minimize")
+study.optimize(objective, n_trials=1000, callbacks=[logging_callback])
+
+print("\n--- Optuna 최적화 최종 결과 ---")
+print(f"Best Value (remaining): {study.best_value:.2f}")
+print("Best Params:", study.best_params)
