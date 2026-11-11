@@ -27,7 +27,6 @@ import requests
 # ---------- Your work: edit the methods in this class ----------
 class Algorithm:
     def __init__(self):
-        # self.offset = (abs(hash(id(self)) + id(object())) % 10)-4.5 * 0.09
         self.initial = 0
         self.prop = 0.0                 #아마 안쓸듯?
         self.window = 0.0
@@ -48,76 +47,73 @@ class Algorithm:
         pass
 
     def choose_bid(self, observation: dict) -> int:
-        """Choose your next bid using your own state and previous feedback.
+        import math
+        import random
 
-        observation is a dictionary supplied by the client, with your own
-        data in the nested dictionary observation["player"]. Useful fields:
+        remaining = int(observation["player"]["remaining"])
+        round_no = int(observation["round"])
+        rounds_left = 1000 - round_no + 1
 
-        observation["round"]:
-            Round you are bidding for (1 through 1,000).
-        observation["player"]["remaining"]:
-            Data you still need to deliver before this round. Penalties can
-            increase it; it is not necessarily smaller than last round.
-        observation["player"]["delivered"]:
-            Total data you have successfully delivered in completed rounds
-            of this attempt (0 at the start), not just the previous round.
+        # 첫 호출: 동일 코드지만 클라이언트마다 독립적인 난수열 사용
+        if not hasattr(self, "_window_rng"):
+            self._window_rng = random.Random()  # 고정 seed 사용하지 않기
+            self.initial = remaining
 
-        Return a Python int from 0 to remaining, inclusive. A bid is the
-        amount you TRY to send; actual delivery may be smaller. Return 0
-        to send nothing this round. Do not return a float, string or None.
-        Example: with remaining == 3, the valid bids are 0, 1, 2 and 3.
+            # 6명이 활동할 때 기대 총합 97을 위한 시작 기준값
+            self.window = remaining / rounds_left*0.963
 
-        Earlier completed rounds are passed to on_result() before this call.
-        Use state saved on self there to make your next decision. There is
-        no previous feedback at the start of a new attempt.
-        """
-        #week1 일 때
-        """ 
-        """
-        if observation["me"]["id"] == "2025320057P1":
-            return 16
-        if observation["me"]["id"] == "2025320057P2":
-            return 18
-        if observation["me"]["id"] == "2025320057P3":
-            return 20
-        if observation["me"]["id"] == "2025320057P4":
-            return 22
-        if observation["me"]["id"] == "2025320057P5":
-            return 
-        # 라운드 1에 각자가 보내야할 총 량을 저장할 필요가 없음.
-        # if observation["round"] == 1:
-        #     self.initial = observation["player"]["remaining"]
-        #     self.bound = round((self.initial / 100000) * 100)
-        #     self.window = float(self.bound)
-        #     return min(self.bound, observation["player"]["remaining"])
+            self.increase = 0.0
+            self.decrease = 0.0  # 기존 0.6보다 완만하게 감소
 
-        # if self.last_loss_queue[-1] > 0 or self.last_panelty_queue[-1] > 0:
-        #     # 1. 혼잡 피해 심각도 계산 (입찰량 대비 손실+패널티 비율)
-        #     severity = min(1.0, (self.last_loss_queue[-1] + self.last_panelty_queue[-1]) / self.last_bid_queue[-1])
-        #     # 2. 심각도에 비례하여 최대 허용 입찰 속도(window) 감소
-        #     self.window = max(1.0, self.window * (1.0 - self.decrease * severity))
-        # else:
-        #     self.window += getattr(self, 'increase', 0.2)
-        # candidate_bid = self.last_bid_queue[-1]
-        # if self.last_bid_queue[-1] < self.bound - 5:      #slow start
-        #     candidate_bid = self.last_bid_queue[-1] + 3
-        # if self.last_loss_queue[-1] > 0:    #바로 이전에 loss가 있었다면?(하지만 week1의 loss는 그냥 운이 안좋아서 생긴거임.)
-        #     if sum(self.last_loss_queue) > round(((self.initial / 100000) * 100)/2.7):   #이거 bound가 너무 높아졌다....
-        #         self.bound -= 1
-        #     return min(self.last_bid_queue[-1] - 1, observation["player"]["remaining"])
-        # if self.last_loss_queue[-self.bound_decision_row:] == [0] * self.bound_decision_row and observation["round"] > 10: #내가 판단하기에 얘는 조금 커졌다.
-        #     self.bound += 1
-        #     candidate_bid = self.last_bid_queue[-1] + 1
-        # if self.bound > self.last_bid_queue[-1] + 1:
-        #     candidate_bid = self.last_bid_queue[-1] + 1
+        if remaining <= 0 or rounds_left <= 0:
+            self.bound = 0
+            return 0
 
+        last_bid = self.last_bid_queue[-1]
+        last_loss = self.last_loss_queue[-1]
+        last_penalty = self.last_panelty_queue[-1]
 
-        # final_bid = min(candidate_bid, int(self.window))
-        # if candidate_bid < int(self.window):
-        #     print("기존거")
-        # elif candidate_bid > int(self.window):
-        #     print("요즘꺼")
-        # return min(final_bid, observation["player"]["remaining"])
+        # 2. 최근 기록으로 입찰 대비 실제 작업 감소 효율 추정
+        # 서버 규칙: after = before - delivered + penalty
+        recent_bid = sum(self.last_bid_queue)
+        recent_net = (
+            sum(self.last_delivery_queue)
+            - sum(self.last_panelty_queue)
+        )
+
+        if recent_bid > 0:
+            net_efficiency = max(
+                0.25,
+                min(1.0, recent_net / recent_bid)
+            )
+        else:
+            net_efficiency = 1.0
+
+        # 3. 남은 작업을 남은 라운드에 보내기 위한 속도
+        # 1.02는 약간의 여유. 완송을 보장하는 값은 아님.
+        pace = (
+            1.02
+            * remaining
+            / rounds_left
+            / net_efficiency
+        )
+
+        amount = max(
+            0.0,
+            min(float(remaining), self.window, pace)
+        )
+        if pace<self.window:
+            print("페이스도 고려하셈 ㅇㅇ")
+
+        # 기존 on_result() 출력과의 호환용
+
+        # 4. 내부 실수 목표를 실제 정수 입찰로 변환
+        lower = math.floor(amount)
+        bid = lower + int(
+            self._window_rng.random() < amount - lower
+        )
+
+        return int(max(0, min(remaining, bid)))
 
         
         # return min(500, observation["player"]["remaining"])
@@ -125,52 +121,52 @@ class Algorithm:
         
 
     def on_result(self, result: dict) -> None:
-        """Update your controller after each completed round.
+            """Update your controller after each completed round.
 
-        result is a dictionary describing ONE completed round:
-            result["round"]:     round that just completed
-            result["bid"]:       amount you requested in that round
-            result["delivered"]: amount actually delivered in that round
-            result["lost"]:      undelivered part of your bid (bid - delivered)
-            result["penalty"]:   extra data added to your remaining workload
-            result["before"]:    your remaining data before that round
-            result["after"]:     your remaining data after that round
+            result is a dictionary describing ONE completed round:
+                result["round"]:     round that just completed
+                result["bid"]:       amount you requested in that round
+                result["delivered"]: amount actually delivered in that round
+                result["lost"]:      undelivered part of your bid (bid - delivered)
+                result["penalty"]:   extra data added to your remaining workload
+                result["before"]:    your remaining data before that round
+                result["after"]:     your remaining data after that round
 
-        after = before - delivered + penalty
-        Lost data is already in remaining; do not add lost again.
-        For example, before=100, bid=5, delivered=3, lost=2, penalty=3
-        gives after=100. The delivered value here is for this round only;
-        observation["player"]["delivered"] is the cumulative total.`
+            after = before - delivered + penalty
+            Lost data is already in remaining; do not add lost again.
+            For example, before=100, bid=5, delivered=3, lost=2, penalty=3
+            gives after=100. The delivered value here is for this round only;
+            observation["player"]["delivered"] is the cumulative total.`
 
-        Save any feedback you need on self; this method returns nothing.
-        Current bandwidth and other students' workloads or bids are not provided.
-        """
-        self.last_bid_queue.pop(0)
-        self.last_bid_queue.append(result["bid"])
-        self.last_delivery_queue.pop(0)
-        self.last_delivery_queue.append(result["delivered"])
-        self.last_loss_queue.pop(0)
-        self.last_loss_queue.append(result["lost"])
-        self.last_panelty_queue.pop(0)
-        self.last_panelty_queue.append(result["penalty"])
-        self.total_bid += result["bid"]
-        self.total_delivered += result["delivered"]
-        self.total_loss += result["lost"]
-        self.total_panelty += result["penalty"]
-        print(f"{result["round"]} round / bound: {self.bound} / {self.last_bid_queue[-1]} bid / {self.last_delivery_queue[-1]} delivered / {self.last_loss_queue[-1]} loss / {self.last_panelty_queue[-1]} panelty")
-        if round(self.last_loss_queue[-1] * 1.5) >  self.last_panelty_queue[-1]:       #round(4.5) == 4?????
-            print("[!] panelty 이득")
-        if round(self.last_loss_queue[-1] * 1.5) <  self.last_panelty_queue[-1]: 
-            print("[!] panelty 손해")
-        if result["round"] % 100 == 0:
-            print(f"중간점검: {self.total_bid} 할당됨 {self.total_delivered} 전달됨 / {self.total_loss} 손실 / {self.total_panelty} 패널티")
+            Save any feedback you need on self; this method returns nothing.
+            Current bandwidth and other students' workloads or bids are not provided.
+            """
+            self.last_bid_queue.pop(0)
+            self.last_bid_queue.append(result["bid"])
+            self.last_delivery_queue.pop(0)
+            self.last_delivery_queue.append(result["delivered"])
+            self.last_loss_queue.pop(0)
+            self.last_loss_queue.append(result["lost"])
+            self.last_panelty_queue.pop(0)
+            self.last_panelty_queue.append(result["penalty"])
+            self.total_bid += result["bid"]
+            self.total_delivered += result["delivered"]
+            self.total_loss += result["lost"]
+            self.total_panelty += result["penalty"]
+            print(f"{result["round"]} round / bound: {self.bound} / {self.last_bid_queue[-1]} bid / {self.last_delivery_queue[-1]} delivered / {self.last_loss_queue[-1]} loss / {self.last_panelty_queue[-1]} panelty")
+            if round(self.last_loss_queue[-1] * 1.5) >  self.last_panelty_queue[-1]:       #round(4.5) == 4?????
+                print("[!] panelty 이득")
+            if round(self.last_loss_queue[-1] * 1.5) <  self.last_panelty_queue[-1]: 
+                print("[!] panelty 손해")
+            if result["round"] % 100 == 0:
+                print(f"중간점검: {self.total_bid} 할당됨 {self.total_delivered} 전달됨 / {self.total_loss} 손실 / {self.total_panelty} 패널티")
 
-        # Use this feedback to update your controller's state.
-        # print(result["round"],"단계 high", self.high_stack,"low:",self.low_stack,"이고 총 bid / loss:",self.total_bid,"/",self.total_loss, "high->low loss:",self.shrink_loss)
-        # if result["round"] == 1000:
-        #     print("끝. HH:",self.hh,"HL:",self.hl,"LH:",self.lh,"LL:",self.ll,"total_bid:",self.total_bid,"total_panelty:",self.total_loss*1.5,"shrink_panelty:",self.shrink_loss*1.5,"high_panelty:",self.high_loss*1.5,"+low panelty:",self.low_loss_by50*1.5)
-        
-        pass
+            # Use this feedback to update your controller's state.
+            # print(result["round"],"단계 high", self.high_stack,"low:",self.low_stack,"이고 총 bid / loss:",self.total_bid,"/",self.total_loss, "high->low loss:",self.shrink_loss)
+            # if result["round"] == 1000:
+            #     print("끝. HH:",self.hh,"HL:",self.hl,"LH:",self.lh,"LL:",self.ll,"total_bid:",self.total_bid,"total_panelty:",self.total_loss*1.5,"shrink_panelty:",self.shrink_loss*1.5,"high_panelty:",self.high_loss*1.5,"+low panelty:",self.low_loss_by50*1.5)
+            
+            pass
 
 
 # ---------- HTTP client: leave the code below unchanged ----------
